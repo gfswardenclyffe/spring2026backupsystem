@@ -28,7 +28,7 @@ impl BankAccount {
 
     pub fn apply_interest(&mut self, rate: f64) {
         if rate > 0.0 { // check input rate is positive
-            self.balance += self.balance * rate;
+            self.balance += self.balance * rate;z
         }
     }
 }
