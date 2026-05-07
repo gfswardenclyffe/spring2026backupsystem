@@ -9,12 +9,14 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+// represents the two workload types used in the simulation
 #[derive(Clone, Copy, Debug)]
 enum TaskKind {
     IO,
     CPU,
 }
 
+// stores the information needed to schedule a task and later calculate its performance metrics
 #[derive(Clone, Debug)]
 struct Task {
     id: usize,
@@ -24,6 +26,7 @@ struct Task {
     cpu_cost: usize,
 }
 
+// stores the timing data after a worker completes a task
 #[derive(Clone, Debug)]//derive(Clone, Debug
 struct TaskResult {
     task_id: usize,
@@ -32,6 +35,7 @@ struct TaskResult {
     turnaround_time: Duration,
 }
 
+// wraps the task so workers can also receive a shutdown message through none
 struct WorkerMessage {
     task: Option<Task>,
 }
@@ -39,7 +43,7 @@ struct WorkerMessage {
 fn main() {
     run_experiment("Experiment A: Balanced workload 70% IO / 30% CPU", 70, 30);
     println!("\n--------------------------------------------------\n");
-    run_experiment("Experiment B: Stressed workload 80% IO / 20% CPU", 80, 20);
+    run_experiment("Experiment B: Stressed workload 20% IO / 80% CPU", 20, 80);
 }
 
 fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
@@ -50,11 +54,13 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
     let arrival_interval = Duration::from_millis(20);
     let task_duration = Duration::from_millis(200);
 
+    // these atomic counters are shared across threads so the dispatcher monitor and workers can safely read and update the current system state
     let global_cpu = Arc::new(AtomicUsize::new(0));
     let active_workers = Arc::new(AtomicUsize::new(0));
     let queue_len = Arc::new(AtomicUsize::new(0));
     let running = Arc::new(AtomicBool::new(true));
 
+    // the first channel moves tasks from the generator to the dispatcher and the second channel returns completed task results from the workers
     let (task_sender, task_receiver) = mpsc::channel::<Task>();
     let (result_sender, result_receiver) = mpsc::channel::<TaskResult>();
 
@@ -63,6 +69,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
 
     let start_time = Instant::now();
 
+    // each worker gets its own channel receiver which lets the dispatcher assign work to a specific available worker
     for worker_id in 0..worker_count {
         let (worker_sender, worker_receiver) = mpsc::channel::<WorkerMessage>();
         worker_senders.push(worker_sender);
@@ -85,6 +92,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
 
                     let turnaround_time = Instant::now().duration_since(task.arrival_time);
 
+                    // after the simulated work finishes the worker releases its cpu allocation and sends its timing results back for logging
                     global_cpu_clone.fetch_sub(task.cpu_cost, Ordering::SeqCst);
                     active_workers_clone.fetch_sub(1, Ordering::SeqCst);
 
@@ -112,6 +120,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
     let monitor_queue_len = Arc::clone(&queue_len);
     let monitor_running = Arc::clone(&running);
 
+    // the monitor samples the system during the experiment so the final output can report average utilization instead of relying on a single end value
     let monitor_handle = thread::spawn(move || {
         let mut samples = 0usize;
         let mut total_cpu = 0usize;
@@ -146,6 +155,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
         (avg_cpu, avg_workers, max_queue_len)
     });
 
+    // the generator uses a fixed seed so the random task mix is reproducible every time the program runs
     let generator_handle = thread::spawn(move || {
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -180,6 +190,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
     let dispatcher_global_cpu = Arc::clone(&global_cpu);
     let dispatcher_queue_len = Arc::clone(&queue_len);
 
+    // the dispatcher works like a basic scheduler by holding incoming tasks in a queue tracking free workers and enforcing the simulated cpu limit before sending tasks out
     let dispatcher_handle = thread::spawn(move || {
         let mut queue: VecDeque<Task> = VecDeque::new();
         let mut free_workers: VecDeque<usize> = (0..worker_count).collect();
@@ -191,6 +202,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
                 dispatcher_queue_len.store(queue.len(), Ordering::SeqCst);
             }
 
+            // finished task results are used to free up workers and are also saved so the program can calculate final metrics
             while completed_count < total_tasks {
                 match result_receiver.try_recv() {
                     Ok(result) => {
@@ -213,6 +225,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
                 if let Some(task) = queue.front() {
                     let current_cpu = dispatcher_global_cpu.load(Ordering::SeqCst);
 
+                    // a task is only sent to a worker if its cpu cost keeps the simulated cpu usage within the 100 percent cap
                     if current_cpu + task.cpu_cost <= 100 {
                         let task = queue.pop_front().unwrap();
                         dispatcher_queue_len.store(queue.len(), Ordering::SeqCst);
@@ -237,6 +250,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
             }
         }
 
+        // once every task has completed the dispatcher sends none to each worker so their loops can exit normally
         for sender in worker_senders {
             sender.send(WorkerMessage { task: None }).unwrap();
         }
@@ -254,6 +268,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
 
     let makespan = start_time.elapsed();
 
+    // the shared result log is copied and cleared between experiments so each run prints metrics from its own workload only
     let results = RESULT_LOG.lock().unwrap();
     let experiment_results = results.clone();
     drop(results);
@@ -271,6 +286,7 @@ fn run_experiment(name: &str, io_percent: usize, cpu_percent: usize) {
     );
 }
 
+// shared result storage protected by a mutex because multiple parts of the program access it across threads
 static RESULT_LOG: Mutex<Vec<TaskResult>> = Mutex::new(Vec::new());
 
 fn print_metrics(
@@ -305,6 +321,7 @@ fn print_metrics(
         .map(|r| r.wait_time.as_secs_f64())
         .fold(0.0, f64::max);
 
+    // these metrics give a quick summary of completion count workload mix runtime wait time cpu pressure queue size and worker utilization
     println!("Total tasks expected: {total_tasks}");
     println!("Total tasks completed: {completed}");
     println!("CPU task target percentage: {expected_cpu_percent}%");
