@@ -1,0 +1,15 @@
+[package]
+name = "task_dispatcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+
+[package]
+name = "dispatcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
